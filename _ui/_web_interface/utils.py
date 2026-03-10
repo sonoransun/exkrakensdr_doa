@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import queue
+import time as _time
 from configparser import ConfigParser
 from math import inf
 from threading import Timer
@@ -11,6 +12,7 @@ import variables
 from dash_devices.dependencies import Output
 from kraken_sdr_signal_processor import DEFAULT_VFO_FIR_ORDER_FACTOR
 from kraken_web_doa import plot_doa
+from kraken_web_multi_doa import plot_multi_doa
 from kraken_web_spectrum import plot_spectrum
 from variables import (
     AGC_WARNING_DISABLED_STYLE,
@@ -88,7 +90,7 @@ def set_clicked(web_interface, clickData):
     return None
 
 
-def fetch_dsp_data(app, web_interface, spectrum_fig, waterfall_fig):
+def fetch_dsp_data(app, web_interface, spectrum_fig, waterfall_fig, multi_doa_fig=None, multi_doa_history_fig=None):
     daq_status_update_flag = 0
     spectrum_update_flag = 0
     doa_update_flag = 0
@@ -199,6 +201,18 @@ def fetch_dsp_data(app, web_interface, spectrum_fig, waterfall_fig):
                 web_interface.max_doas_list = data_entry[1].copy()
             elif data_entry[0] == "DoA Squelch":
                 web_interface.squelch_update = data_entry[1].copy()
+            elif data_entry[0] == "DoA Results All":
+                web_interface.multi_doa_all_results = data_entry[1]
+                history_entry = {
+                    "timestamp": _time.time(),
+                    "angles": data_entry[1]["angles"][:],
+                    "confidences": data_entry[1]["confidences"][:],
+                    "freqs": data_entry[1]["freqs"][:],
+                    "squelch_active": data_entry[1]["squelch_active"][:],
+                }
+                web_interface.multi_doa_history.append(history_entry)
+                if len(web_interface.multi_doa_history) > web_interface.multi_doa_history_max:
+                    web_interface.multi_doa_history.pop(0)
             elif data_entry[0] == "VFO-0 Frequency":
                 app.push_mods(
                     {
@@ -214,6 +228,10 @@ def fetch_dsp_data(app, web_interface, spectrum_fig, waterfall_fig):
         pass
         # Handle task here and call q.task_done()
 
+    heartbeat_age = _time.monotonic() - web_interface.module_signal_processor.last_heartbeat
+    if heartbeat_age > 10 and web_interface.module_signal_processor.last_heartbeat > 0:
+        web_interface.logger.warning("Signal processor stalled (%.1fs since last heartbeat)", heartbeat_age)
+
     if (
         web_interface.pathname == "/config" or web_interface.pathname == "/" or web_interface.pathname == "/init"
     ) and daq_status_update_flag:
@@ -224,8 +242,15 @@ def fetch_dsp_data(app, web_interface, spectrum_fig, waterfall_fig):
     # web_interface.reset_doa_graph_flag):
     elif web_interface.pathname == "/doa" and doa_update_flag:
         plot_doa(app, web_interface, doa_fig)
+    elif web_interface.pathname == "/multi-doa" and doa_update_flag:
+        if multi_doa_fig is not None and multi_doa_history_fig is not None:
+            plot_multi_doa(app, web_interface, multi_doa_fig, multi_doa_history_fig)
 
-    web_interface.dsp_timer = Timer(0.01, fetch_dsp_data, args=(app, web_interface, spectrum_fig, waterfall_fig))
+    web_interface.dsp_timer = Timer(
+        0.01,
+        fetch_dsp_data,
+        args=(app, web_interface, spectrum_fig, waterfall_fig, multi_doa_fig, multi_doa_history_fig),
+    )
     web_interface.dsp_timer.start()
 
 
@@ -337,7 +362,7 @@ def settings_change_watcher(web_interface, settings_file_path, last_attempt_fail
                 web_interface.module_signal_processor.vfo_default_demod = dsp_settings.get("vfo_default_demod", "None")
                 web_interface.module_signal_processor.vfo_default_iq = dsp_settings.get("vfo_default_iq", "False")
                 web_interface.module_signal_processor.max_demod_timeout = int(dsp_settings.get("max_demod_timeout", 60))
-                web_interface.module_signal_processor.dsp_decimation = int(dsp_settings.get("dsp_decimation", 0))
+                web_interface.module_signal_processor.dsp_decimation = max(int(dsp_settings.get("dsp_decimation", 1)), 1)
                 web_interface.module_signal_processor.active_vfos = int(dsp_settings.get("active_vfos", 0))
                 web_interface.module_signal_processor.output_vfo = int(dsp_settings.get("output_vfo", 0))
                 web_interface.compass_offset = dsp_settings.get("compass_offset", 0)
@@ -363,6 +388,28 @@ def settings_change_watcher(web_interface, settings_file_path, last_attempt_fail
                         "vfo_demod_" + str(i), "Default"
                     )
                     web_interface.module_signal_processor.vfo_iq[i] = dsp_settings.get("vfo_iq_" + str(i), "Default")
+
+                # Webhook Configuration
+                detector = web_interface.module_signal_processor.webhook_detector
+                detector.enabled = dsp_settings.get("webhook_enabled", False)
+                detector.evt_signal_appear = dsp_settings.get("webhook_evt_signal_appear", True)
+                detector.evt_signal_disappear = dsp_settings.get("webhook_evt_signal_disappear", True)
+                detector.evt_novel_freq = dsp_settings.get("webhook_evt_novel_freq", True)
+                detector.evt_doa_change = dsp_settings.get("webhook_evt_doa_change", True)
+                detector.evt_power_alert = dsp_settings.get("webhook_evt_power_alert", True)
+                detector.doa_change_threshold_deg = float(dsp_settings.get("webhook_doa_change_threshold_deg", 10))
+                detector.power_high_threshold_dbm = float(dsp_settings.get("webhook_power_high_threshold_dbm", -30))
+                detector.power_low_threshold_dbm = float(dsp_settings.get("webhook_power_low_threshold_dbm", -90))
+                detector.freq_tolerance_hz = float(dsp_settings.get("webhook_freq_tolerance_hz", 5000))
+                detector.autolearn_enabled = dsp_settings.get("webhook_autolearn_enabled", False)
+                detector.autolearn_window_sec = float(dsp_settings.get("webhook_autolearn_window_sec", 3600))
+                detector.frequency_history.window_sec = detector.autolearn_window_sec
+                detector.frequency_history.tolerance_hz = detector.freq_tolerance_hz
+                known_str = dsp_settings.get("webhook_known_frequencies", "")
+                if known_str.strip():
+                    detector.known_frequencies = [float(f.strip()) for f in known_str.split(",") if f.strip()]
+                else:
+                    detector.known_frequencies = []
 
                 web_interface.module_signal_processor.DOA_algorithm = dsp_settings.get("doa_method", "MUSIC")
                 web_interface.module_signal_processor.DOA_expected_num_of_sources = dsp_settings.get(
@@ -529,7 +576,7 @@ def update_daq_status(app, web_interface):
 
         daq_rf_center_freq_str = str(web_interface.daq_center_freq)
         daq_sampling_freq_str = str(web_interface.daq_fs)
-        bw = web_interface.daq_fs / web_interface.module_signal_processor.dsp_decimation
+        bw = web_interface.daq_fs / max(web_interface.module_signal_processor.dsp_decimation, 1)
         dsp_decimated_bw_str = "{0:.3f}".format(bw)
         vfo_range_str = (
             "{0:.3f}".format(web_interface.daq_center_freq - bw / 2)

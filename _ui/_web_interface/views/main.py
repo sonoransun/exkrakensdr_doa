@@ -18,6 +18,7 @@ layout = html.Div(
                 html.A("Configuration", className="header_active", id="header_config", href="/config"),
                 html.A("Spectrum", className="header_inactive", id="header_spectrum", href="/spectrum"),
                 html.A("DoA Estimation", className="header_inactive", id="header_doa", href="/doa"),
+                html.A("Multi-VFO DoA", className="header_inactive", id="header_multi_doa", href="/multi-doa"),
                 html.Div(
                     [
                         html.A("TAK", className="header_inactive", id="header_tak", href="#", n_clicks=0),
@@ -41,6 +42,7 @@ layout = html.Div(
         html.Div(id="placeholder_config_page_upd", style={"display": "none"}),
         html.Div(id="placeholder_spectrum_page_upd", style={"display": "none"}),
         html.Div(id="placeholder_doa_page_upd", style={"display": "none"}),
+        html.Div(id="placeholder_multi_doa_page_upd", style={"display": "none"}),
         html.Div(id="dummy_output", style={"display": "none"}),
         html.Div(id="page-content"),
     ]

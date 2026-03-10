@@ -31,6 +31,17 @@ app.layout = main.layout
 from callbacks import display_page, main, update_daq_params  # noqa: F401
 
 if __name__ == "__main__":
-    # Debug mode does not work when the data interface is set to shared-memory
-    # "shmem"!
-    app.run_server(debug=False, host="0.0.0.0", port=8080)
+    import argparse
+
+    from maindash import web_interface
+    from variables import dsp_settings
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true")
+    args, _ = parser.parse_known_args()
+    if args.debug:
+        web_interface.debug_mode = True
+
+    # Debug mode does not work when the data interface is set to shared-memory "shmem"!
+    debug = web_interface.debug_mode and dsp_settings.get("data_interface", "shmem") != "shmem"
+    app.run_server(debug=debug, host="0.0.0.0", port=8080)

@@ -63,15 +63,18 @@ from variables import (
 # os.environ['OPENBLAS_NUM_THREADS'] = '4'
 # os.environ['NUMBA_CPU_NAME'] = 'cortex-a72'
 
+HTTP_TIMEOUT_SECS = 5
+HTTP_TIMEOUT_EXTERNAL_SECS = 3
+
 # Make gpsd an optional component
 try:
     import gpsd
 
     hasgps = True
-    print("gpsd Available")
+    logging.getLogger(__name__).info("gpsd available")
 except ModuleNotFoundError:
     hasgps = False
-    print("Can't find gpsd - ok if no external gps used")
+    logging.getLogger(__name__).info("gpsd not found - ok if no external GPS")
 
 MIN_SPEED_FOR_VALID_HEADING = 2.0  # m / s
 MIN_DURATION_FOR_VALID_HEADING = 3.0  # s
@@ -214,6 +217,10 @@ class SignalProcessor(threading.Thread):
         self.full_rest_server = "http://MY_REST_SERVER.com/save.php"
         self.pool = Pool()
         self.rdf_mapper_last_write_time = time.time()
+
+        from webhook_events import WebhookEventDetector
+
+        self.webhook_detector = WebhookEventDetector(max_vfos=self.max_vfos)
         self.doa_max_list = [-1] * self.max_vfos
 
         self.theta_0_list = []
@@ -226,7 +233,11 @@ class SignalProcessor(threading.Thread):
         # TODO: NEED to have a funtion to update the file name if changed in the web ui
         self.data_recording_file_name = "mydata.csv"
         data_recording_file_path = os.path.join(os.path.join(self.root_path, self.data_recording_file_name))
-        self.data_record_fd = open(data_recording_file_path, "a+")
+        try:
+            self.data_record_fd = open(data_recording_file_path, "a+")
+        except OSError as e:
+            self.logger.error("Failed to open recording file: %s", e)
+            self.data_record_fd = open(os.devnull, "a+")
         self.en_data_record = False
         self.write_interval = 1
         self.last_write_time = [time.time()] * self.max_vfos
@@ -235,6 +246,7 @@ class SignalProcessor(threading.Thread):
         self.number_of_correlated_sources = []
         self.snrs = []
         self.dropped_frames = 0
+        self.last_heartbeat = 0
 
     @property
     def vfo_demod_modes(self):
@@ -322,7 +334,7 @@ class SignalProcessor(threading.Thread):
             daq_status["adc_overdrive"] = bool(self.module_receiver.iq_header.adc_overdrive_flags)
             daq_status["sampling_frequency_hz"] = self.module_receiver.iq_header.adc_sampling_freq
             daq_status["bandwidth_hz"] = self.module_receiver.iq_header.sampling_freq
-            daq_status["decimated_bandwidth_hz"] = self.module_receiver.iq_header.sampling_freq // self.dsp_decimation
+            daq_status["decimated_bandwidth_hz"] = self.module_receiver.iq_header.sampling_freq // max(self.dsp_decimation, 1)
             daq_status["buffer_size_ms"] = (
                 (self.module_receiver.iq_header.cpi_length / self.module_receiver.iq_header.sampling_freq) * 1e3
                 if self.module_receiver.iq_header.sampling_freq > 0.0
@@ -341,8 +353,8 @@ class SignalProcessor(threading.Thread):
         try:
             with open(status_file_path, "w", encoding="utf-8") as file:
                 json.dump(status, file)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug("Failed to write status file: %s", e)
 
     def run(self):
         """
@@ -354,6 +366,7 @@ class SignalProcessor(threading.Thread):
             time.sleep(1)
             while self.run_processing:
                 self.is_running = True
+                self.last_heartbeat = time.monotonic()
                 que_data_packet = []
 
                 if self.hasgps and self.usegps:
@@ -527,13 +540,13 @@ class SignalProcessor(threading.Thread):
                                 # Get max amplitude of the channel from the FFT for squelching
                                 # From channel frequency determine array index of channel
                                 vfo_width_idx = int(
-                                    (spectrum_window_size * self.vfo_bw[i]) / (sampling_freq)
+                                    (spectrum_window_size * self.vfo_bw[i]) / max(sampling_freq, 1)
                                 )  # Width of channel in array indexes based on FFT size
                                 vfo_width_idx = max(vfo_width_idx, 2)
 
                                 freqMin = -sampling_freq / 2
 
-                                vfo_center_idx = int((((freq - freqMin) * spectrum_window_size) / sampling_freq))
+                                vfo_center_idx = int((((freq - freqMin) * spectrum_window_size) / max(sampling_freq, 1)))
 
                                 vfo_upper_bound = vfo_center_idx + vfo_width_idx // 2
                                 vfo_lower_bound = vfo_center_idx - vfo_width_idx // 2
@@ -630,6 +643,20 @@ class SignalProcessor(threading.Thread):
                                     self.freq_list.append(write_freq)
                                     self.doa_result_log_list.append(doa_result_log)
 
+                                    if self.webhook_detector.enabled:
+                                        self.webhook_detector.on_signal_detected(
+                                            vfo_idx=i,
+                                            freq_hz=float(self.vfo_freq[i]),
+                                            bearing_deg=float(theta_0),
+                                            confidence=float(np.max(conf_val)),
+                                            power_dbm=float(np.maximum(-100, max_amplitude)),
+                                            snr_db=float(self.snrs[0]) if self.snrs else 0.0,
+                                            station_id=self.station_id,
+                                            lat=self.latitude,
+                                            lon=self.longitude,
+                                            timestamp_ms=self.timestamp,
+                                        )
+
                                     if self.vfo_demod_modes[i] or self.vfo_iq_enabled[i]:
                                         if theta_0 not in self.vfo_theta_channel[i]:
                                             self.vfo_theta_channel[i].append(theta_0)
@@ -649,6 +676,15 @@ class SignalProcessor(threading.Thread):
                                     elif self.vfo_iq_enabled[i]:
                                         self.vfo_iq_channel[i] = np.concatenate((self.vfo_iq_channel[i], iq_channel))
                                 else:
+                                    if self.webhook_detector.enabled:
+                                        self.webhook_detector.on_signal_lost(
+                                            vfo_idx=i,
+                                            freq_hz=float(self.vfo_freq[i]),
+                                            station_id=self.station_id,
+                                            lat=self.latitude,
+                                            lon=self.longitude,
+                                            timestamp_ms=self.timestamp,
+                                        )
                                     self.vfo_time[i] = 0
                                     self.vfo_blocked[i] = False
                                     fm_demod_channel = self.vfo_demod_channel[i]
@@ -668,6 +704,20 @@ class SignalProcessor(threading.Thread):
                             que_data_packet.append(["DoA Confidence", conf_val])
                             que_data_packet.append(["DoA Squelch", update_list])
                             que_data_packet.append(["DoA Max List", self.doa_max_list])
+                            que_data_packet.append(
+                                [
+                                    "DoA Results All",
+                                    {
+                                        "thetas": self.DOA_theta,
+                                        "results": list(self.doa_result_log_list),
+                                        "angles": list(self.theta_0_list),
+                                        "confidences": list(self.confidence_list),
+                                        "powers": list(self.max_power_level_list),
+                                        "freqs": list(self.freq_list),
+                                        "squelch_active": list(update_list),
+                                    },
+                                ]
+                            )
                             if self.vfo_mode == "Auto":
                                 que_data_packet.append(["VFO-0 Frequency", self.vfo_freq[0]])
 
@@ -853,9 +903,9 @@ class SignalProcessor(threading.Thread):
                                     "elng": str(elng),
                                 }
                                 try:
-                                    self.pool.apply_async(requests.post, args=[self.RDF_mapper_server, rdf_post])
+                                    self.pool.apply_async(requests.post, args=[self.RDF_mapper_server, rdf_post], kwds={"timeout": HTTP_TIMEOUT_SECS})
                                 except Exception as e:
-                                    print(f"NO CONNECTION: Invalid RDF Mapper Server: {e}")
+                                    self.logger.error("RDF Mapper connection failed: %s", e)
                         elif self.DOA_data_format == "Full POST":
                             time_elapsed = time.time() - self.rdf_mapper_last_write_time
                             if time_elapsed > 1:  # reuse RDF mapper timer, it works the same
@@ -863,7 +913,7 @@ class SignalProcessor(threading.Thread):
 
                                 myip = "127.0.0.1"
                                 try:
-                                    myip = json.loads(requests.get("https://ip.seeip.org/jsonip?").text)["ip"]
+                                    myip = json.loads(requests.get("https://ip.seeip.org/jsonip?", timeout=HTTP_TIMEOUT_EXTERNAL_SECS).text)["ip"]
                                 except Exception:
                                     pass
 
@@ -895,13 +945,29 @@ class SignalProcessor(threading.Thread):
                                     "snr_db": self.snrs[0],
                                 }
                                 try:
-                                    self.pool.apply_async(requests.post, args=[self.RDF_mapper_server, post])
+                                    self.pool.apply_async(requests.post, args=[self.RDF_mapper_server, post], kwds={"timeout": HTTP_TIMEOUT_SECS})
                                 except Exception as e:
-                                    print(f"NO CONNECTION: Invalid Server: {e}")
+                                    self.logger.error("Server connection failed: %s", e)
                         elif self.DOA_data_format in ("Kraken App", "DF Aggregator", "Kerberos App"):
                             pass
                         else:
                             self.logger.error(f"Invalid DOA Result data format: {self.DOA_data_format}")
+
+                        # Batch-post webhook events to Node.js middleware
+                        if self.webhook_detector.enabled:
+                            webhook_events = self.webhook_detector.drain_events()
+                            if webhook_events:
+                                try:
+                                    self.pool.apply_async(
+                                        requests.post,
+                                        kwds={
+                                            "url": "http://127.0.0.1:8042/webhook_events",
+                                            "json": {"events": [e.to_dict() for e in webhook_events]},
+                                            "timeout": HTTP_TIMEOUT_SECS,
+                                        },
+                                    )
+                                except Exception as e:
+                                    self.logger.error(f"Error posting webhook events: {e}")
 
                 stop_time = time.time()
 
@@ -924,8 +990,7 @@ class SignalProcessor(threading.Thread):
                         que_data_packet, False
                     )  # Must be non-blocking so DOA can update when dash browser window is closed
                 except Exception:
-                    # Discard data, UI couldn't consume fast enough
-                    pass
+                    self.logger.debug("SP queue full, discarding frame")
 
     def estimate_DOA(self, processed_signal, vfo_freq):
         """
@@ -1209,7 +1274,7 @@ class SignalProcessor(threading.Thread):
         try:
             self.pool.apply_async(
                 requests.post,
-                kwds={"url": "http://127.0.0.1:8042/doapost", "json": jsonDict},
+                kwds={"url": "http://127.0.0.1:8042/doapost", "json": jsonDict, "timeout": HTTP_TIMEOUT_SECS},
             )
             # r = requests.post('http://127.0.0.1:8042/doapost', json=jsonDict)
         except requests.exceptions.RequestException as e:
@@ -1219,14 +1284,21 @@ class SignalProcessor(threading.Thread):
         self.data_record_fd.close()
         self.data_recording_file_name = filename
         data_recording_file_path = os.path.join(os.path.join(self.root_path, self.data_recording_file_name))
-        self.data_record_fd = open(data_recording_file_path, "a+")
+        try:
+            self.data_record_fd = open(data_recording_file_path, "a+")
+        except OSError as e:
+            self.logger.error("Failed to open new recording file: %s", e)
+            self.data_record_fd = open(os.devnull, "a+")
         self.en_data_record = False
 
     def get_recording_filesize(self):
-        return round(
-            os.path.getsize(os.path.join(os.path.join(self.root_path, self.data_recording_file_name))) / 1048576,
-            2,
-        )  # Convert to MB
+        try:
+            return round(
+                os.path.getsize(os.path.join(os.path.join(self.root_path, self.data_recording_file_name))) / 1048576,
+                2,
+            )  # Convert to MB
+        except OSError:
+            return 0
 
 
 def calculate_end_lat_lng(s_lat: float, s_lng: float, doa: float, my_bearing: float) -> Tuple[float, float]:

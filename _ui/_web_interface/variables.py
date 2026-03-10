@@ -20,7 +20,8 @@ settings_file_path = os.path.join(shared_path, "settings.json")
 try:
     with open(settings_file_path, "r", encoding="utf-8") as myfile:
         dsp_settings = json.load(myfile)
-except Exception:
+except Exception as e:
+    print("Warning: Failed to load settings:", e)
     dsp_settings = dict()
     dsp_settings["timestamp"] = INVALID_SETTINGS_FILE_TIMESTAMP
 else:

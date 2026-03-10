@@ -12,6 +12,7 @@ from views.station_config_card import get_station_config_card_layout
 from views.system_control_card import get_system_control_card_layout
 from views.vfo_card import get_vfo_card_layout
 from views.vfo_config_card import get_vfo_config_card_layout
+from views.webhook_config_card import get_webhook_config_card_layout
 
 
 def write_config_file_dict(web_interface, param_dict, dsp_settings):
@@ -79,6 +80,7 @@ def generate_config_page_layout(web_interface):
         get_display_options_card_layout(),
         get_station_config_card_layout(),
         get_recording_config_card_layout(),
+        get_webhook_config_card_layout(),
         get_system_control_card_layout(),
     ]
 

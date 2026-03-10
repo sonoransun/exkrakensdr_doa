@@ -8,3 +8,6 @@ line-length = 120
 ignore = ['DUO107', 'E402', 'E501', 'E203', 'W503']
 max-line-length = 120
 count = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

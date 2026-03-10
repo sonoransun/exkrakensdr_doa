@@ -1,5 +1,6 @@
 import dash_devices as dash
 from kraken_web_interface import WebInterface
+from kraken_web_multi_doa import init_multi_doa_fig, init_multi_doa_history_fig
 from kraken_web_spectrum import init_spectrum_fig
 from variables import fig_layout, trace_colors
 from waterfall import init_waterfall
@@ -25,3 +26,5 @@ web_interface = WebInterface()
 #############################################
 spectrum_fig = init_spectrum_fig(web_interface, fig_layout, trace_colors)
 waterfall_fig = init_waterfall(web_interface)
+multi_doa_fig = init_multi_doa_fig(web_interface, fig_layout)
+multi_doa_history_fig = init_multi_doa_history_fig(fig_layout)

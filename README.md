@@ -1,11 +1,170 @@
-# Kraken SDR DoA DSP
-This software is intended to demonstrate the direction of arrival (DoA) estimation capabilities of the KrakenSDR and other RTL-SDR based coherent receiver systems which use the compatible data acquisition system - HeIMDALL DAQ Firmware.
+# KrakenSDR DoA DSP
 
-The complete application is broken down into two main modules in terms of implementation, into the DAQ Subsystem and to the DSP Subsystem. These two modules can operate together either remotely through Ethernet connection or locally on the same host using shared-memory.
+Direction of arrival (DoA) estimation software for the KrakenSDR and other RTL-SDR based coherent receiver systems using the Heimdall DAQ Firmware.
 
-Running these two subsystems on separate processing units can grant higher throughput and stability, while running on the same processing unit makes the entire system more compact.
+## System Capabilities
+
+```mermaid
+graph TD
+    subgraph Hardware
+        ANT[5-Channel Antenna Array] --> SDR[KrakenSDR / RTL-SDR Coherent Receivers]
+        GPS[GPS Module] -.->|Optional| SDR
+    end
+
+    subgraph "Data Acquisition (Heimdall DAQ)"
+        SDR --> DAQ[DAQ Firmware]
+        DAQ -->|IQ Frames via Ethernet or Shared Memory| DSP
+    end
+
+    subgraph "Signal Processing"
+        DSP[Signal Processor] --> SPEC[Spectrum Analysis]
+        DSP --> DOA[DoA Estimation]
+        DSP --> VFO[16-Channel VFO System]
+        DSP --> REC[IQ / WAV Recording]
+        DSP --> DEMOD[FM Demodulation]
+        DSP --> EVENTS[Webhook Event Detection]
+
+        DOA --> |MUSIC, Bartlett, Capon, MEM, TNA, ROOT-MUSIC| RESULTS[Bearing + Confidence]
+        VFO --> |Per-VFO Squelch + Bandwidth| DOA
+    end
+
+    subgraph "Web Interface :8080"
+        SPEC --> SPEC_PAGE[Spectrum + Waterfall Display]
+        RESULTS --> DOA_PAGE[Single-VFO DoA Plot]
+        RESULTS --> MULTI_DOA[Multi-VFO DoA Dashboard]
+        MULTI_DOA --> COMPASS[Shared Compass Plot]
+        MULTI_DOA --> TABLE[VFO Summary Table]
+        MULTI_DOA --> HISTORY[Bearing History Chart]
+    end
+
+    subgraph "Middleware :8042"
+        RESULTS --> MW[Node.js Express + WebSocket]
+        EVENTS --> MW
+        MW --> APP[KrakenSDR Mobile App]
+        MW --> CLOUD[Kraken Pro Cloud]
+        MW --> WEBHOOKS[External Webhook URLs]
+    end
+```
+
+## Architecture
+
+The system comprises two main subsystems that can run locally (shared memory) or remotely (Ethernet):
+
+```mermaid
+flowchart LR
+    subgraph DAQ["DAQ Subsystem"]
+        HW[RTL-SDR Hardware] --> HEIMDALL[Heimdall DAQ Firmware]
+    end
+
+    subgraph DSP["DSP Subsystem"]
+        RX[ReceiverRTLSDR<br/><i>_sdr/_receiver/</i>]
+        SP[SignalProcessor<br/><i>_sdr/_signal_processing/</i>]
+        WH[WebhookEventDetector<br/><i>_sdr/_signal_processing/</i>]
+        RX -->|IQ Data Queue| SP
+        SP --> WH
+    end
+
+    subgraph UI["Web UI :8080"]
+        WEB[WebInterface<br/><i>_ui/_web_interface/</i>]
+        DASH[Dash App<br/>Plotly Visualization]
+        WEB --> DASH
+    end
+
+    subgraph MW["Middleware"]
+        NODE[Express Server :8042<br/><i>_nodejs/index.js</i>]
+        WS[WebSocket :8021]
+        WHDISP[WebhookDispatcher<br/><i>_nodejs/webhook_dispatcher.js</i>]
+        NODE --> WS
+        NODE --> WHDISP
+    end
+
+    subgraph CONFIG["Configuration"]
+        SETTINGS[settings.json<br/><i>_share/settings.json</i>]
+    end
+
+    HEIMDALL -->|":5000 Ethernet / shmem"| RX
+    SP -->|"Data Queues"| WEB
+    SP -->|"POST /doapost"| NODE
+    WH -->|"POST /webhook_events"| NODE
+    SETTINGS -.->|"Hot-reload 500ms"| WEB
+    SETTINGS -.->|"MD5 poll"| NODE
+    DASH -->|"push_mods WebSocket"| BROWSER[Browser Clients]
+    WS --> MOBILE[Mobile / Remote Clients]
+    WHDISP --> EXT[External Systems]
+```
+
+## Webhook Event System
+
+Configurable callbacks fire on signal events and dispatch to external URLs:
+
+```mermaid
+flowchart TD
+    subgraph Detection["Python Signal Processor"]
+        SIG_ON["Signal Above Squelch"]
+        SIG_OFF["Signal Below Squelch"]
+        DOA_SHIFT["Bearing Shift > Threshold"]
+        PWR["Power Crosses Threshold"]
+        NOVEL["Frequency Not in Allowlist<br/>or Auto-Learn History"]
+
+        SIG_ON -->|"signal_appear"| Q
+        SIG_OFF -->|"signal_disappear"| Q
+        DOA_SHIFT -->|"doa_change"| Q
+        PWR -->|"power_alert"| Q
+        NOVEL -->|"novel_frequency"| Q
+        Q[Event Queue]
+    end
+
+    subgraph Classification["Frequency Classification"]
+        ALLOW[Static Allowlist<br/><i>Known frequencies in settings</i>]
+        AUTO[Auto-Learn History<br/><i>Time-window tracking</i>]
+        ALLOW --> NOVEL
+        AUTO --> NOVEL
+    end
+
+    subgraph Dispatch["Node.js Middleware"]
+        Q -->|"POST /webhook_events<br/>Batched per frame"| DISPATCHER[WebhookDispatcher]
+        DISPATCHER -->|"Exponential backoff retry"| URL1[Webhook URL 1]
+        DISPATCHER -->|"Exponential backoff retry"| URL2[Webhook URL 2]
+        DISPATCHER --> URLN[Webhook URL N]
+    end
+```
+
+**Webhook event payload fields:** `event_type`, `timestamp`, `vfo_index`, `frequency_hz`, `station_id`, `latitude`, `longitude`, `bearing_deg`, `confidence`, `power_dbm`, `snr_db`, plus event-specific context fields.
+
+## Multi-VFO DoA Dashboard
+
+The Multi-VFO DoA page (`/multi-doa`) displays all active VFOs simultaneously:
+
+```mermaid
+graph LR
+    subgraph Dashboard["Multi-VFO Dashboard /multi-doa"]
+        direction TB
+        COMPASS["Shared Compass Plot<br/>All VFO bearings overlaid<br/>Color-coded per VFO<br/>Filled DoA curves + peak markers"]
+        TABLE["Summary Table<br/>Freq | Bearing | Power | Confidence | Status<br/>Per active VFO"]
+        HISTORY["Bearing History Chart<br/>Bearing vs time for all VFOs<br/>Rolling 2-minute window"]
+    end
+
+    VFO0[VFO-0: 394.3 MHz] --> COMPASS
+    VFO1[VFO-1: 395.0 MHz] --> COMPASS
+    VFO2[VFO-2: 396.5 MHz] --> COMPASS
+    VFON["VFO-3..15"] --> COMPASS
+```
+
+**Requirement:** Set `output_vfo` to `-1` (ALL mode) so that DoA is computed for every active VFO.
+
+## Network Ports
+
+| Port | Service | Protocol |
+|------|---------|----------|
+| 5000 | DAQ data interface | Ethernet |
+| 5001 | DAQ command interface | Ethernet |
+| 8021 | WebSocket (real-time data to apps) | WS |
+| 8042 | Middleware REST API (settings, DoA data, webhooks) | HTTP |
+| 8080 | Web UI (Dash) | HTTP |
+| 8081 | File server (settings.json, logs) | HTTP |
 
 ## Full Instructions
+
 Please [consult the Wiki on the kraken_docs repo](https://github.com/krakenrf/krakensdr_docs/wiki) for full documentation on the use of the KrakenSDR.
 
 ## Raspberry Pi 4/5 and Orange Pi 5B Image QUICKSTART
@@ -14,17 +173,17 @@ Please [consult the Wiki on the kraken_docs repo](https://github.com/krakenrf/kr
 
 **Alternative Download:** https://drive.google.com/drive/folders/14NuCOGM1Fh1QypDNMngXEepKYRBsG--B?usp=sharing
 
-In these image the code will automatically run on boot. Note that it may take 2-3 minutes for the boot process to complete. 
+In these image the code will automatically run on boot. Note that it may take 2-3 minutes for the boot process to complete.
 
 To run this code flash the image file to an SD Card using Etcher. The SD Card needs to be at least 8GB and we recommend using a class 10 card or faster. For advanced users the login/password details for SSH and terminal are "krakenrf"/"krakensdr"
 
 Note that for the Orange Pi 5B, the image is for the Orange Pi 5**B** specifically. This is the Orange Pi 5 model with the included WiFi module.
 
 Please follow the rest of the guide at https://github.com/krakenrf/krakensdr_docs/wiki/02.-Direction-Finding-Quickstart-Guide
-    
+
 ### Pi 4 Overclock
 To get the best performance we recommend adding aftermarket cooling to your Pi 4 and overclocking to at least 2000 MHz. We won't provide instructions for overclocking here, but they can be easily Googled.
-    
+
 ### KerberosSDR Setup (KrakenSDR users Ignore)
 
 Consult the Wiki page at https://github.com/krakenrf/krakensdr_docs/wiki/10.-KerberosSDR-Setup-for-KrakenSDR-Software for information on setting up your KerberosSDR to work with the KrakenSDR software.
@@ -37,9 +196,21 @@ Consult the Wiki page at https://github.com/krakenrf/krakensdr_docs/wiki/10.-Ker
 4) Set the VFO-0 bandwidth to the bandwidth of your signal.
 5) Open the "Spectrum" button and ensure that your signal of interest is active and selected by the VFO-0 window. If it is a bursty signal, determine an appropriate squelching power, and enter it back into the VFO-0 squelch settings in the confuration screen.
 6) Open the DOA Estimation tab to see DOA info.
-7) Connect to the Android App for map visualization (See Android Instructions - coming later)
+7) Open the Multi-VFO DoA tab to see all VFO bearings simultaneously (requires output_vfo set to ALL).
+8) Connect to the Android App for map visualization (See Android Instructions - coming later)
 
 You can also 'click to tune' in the spectrum. Either by clicking on the spectrum graph or the waterfall at the frequency of interest.
+
+## Webhook Configuration
+
+Enable webhooks in the Configuration page under the "Webhook Configuration" card:
+
+1. Check **Enable Webhooks** and enter one or more comma-separated webhook URLs.
+2. Toggle which event types to receive: Signal Appear, Signal Disappear, Novel Frequency, DoA Change, Power Alert.
+3. Set thresholds: DoA change degrees, power high/low dBm levels.
+4. Configure frequency classification: enter known frequencies (Hz, comma-separated), set match tolerance, and optionally enable auto-learning with a time window.
+
+Webhook events are POSTed as JSON to each configured URL with exponential backoff retry on failure. Monitor dispatch status at `GET http://KRAKEN_IP:8042/webhook_status`.
 
 ## VirtualBox Image
 If you do not wish to use a Pi 4 as your KrakenSDR computing device, you can also use a Windows or Linux Laptop/PC with our VirtualBox pre-made image. This image file is currently in beta. It includes the KrakenSDR DOA, Passive Radar, and GNU Radio software.
@@ -105,7 +276,7 @@ conda install werkzeug==2.0.2
 conda install -y plotly==5.23.0
 ```
 
-4. (**OPTIONAL**) Install GPSD if you want to run a USB GPS on the Pi 4. 
+4. (**OPTIONAL**) Install GPSD if you want to run a USB GPS on the Pi 4.
 
 ```
 sudo apt install gpsd
@@ -137,9 +308,9 @@ Please be patient on the first run, as it can take 1-2 minutes for the JIT numba
 
 ### Remote operation
 
-With remote operation you can run the DAQ on one machine on your network, and the DSP software on another. 
+With remote operation you can run the DAQ on one machine on your network, and the DSP software on another.
 
-1. Start the heimdall DAQ subsystem on your remote computing device. (Make sure that the `daq_chain_config.ini` contains the proper configuration) 
+1. Start the heimdall DAQ subsystem on your remote computing device. (Make sure that the `daq_chain_config.ini` contains the proper configuration)
     (See:https://github.com/krakenrf/heimdall_daq_fw/blob/main/Documentation/HDAQ_firmware_ver1.0.20201130.pdf)
 2. Set the IP address of the DAQ Subsystem in the `settings.json`, `default_ip` field.
 3. Start the DoA DSP software by typing:
@@ -174,6 +345,16 @@ A typical use would be the following:
 * GET request - retrive current settings
 * modify settings in json
 * POST request - save new settings to kraken
+
+### Middleware API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/settings` | Retrieve current settings.json |
+| POST | `/settings` | Update settings.json (triggers hot-reload) |
+| POST | `/doapost` | Receive DoA results from signal processor |
+| POST | `/webhook_events` | Receive batched signal events from Python for webhook dispatch |
+| GET | `/webhook_status` | Retrieve webhook dispatch statistics |
 
 
 ## For Contributors

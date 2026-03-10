@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import queue
 import time
 
@@ -9,6 +10,7 @@ import numpy as np
 from variables import (
     settings_file_path,
     dsp_settings,
+    root_path,
     DEFAULT_MAPPING_SERVER_ENDPOINT,
     AUTO_GAIN_VALUE,
     INVALID_SETTINGS_FILE_TIMESTAMP,
@@ -18,6 +20,7 @@ from variables import (
 
 from dash_devices.dependencies import Input
 from kraken_sdr_receiver import ReceiverRTLSDR
+from logging_config import configure_logging
 
 # Import built-in modules
 from kraken_sdr_signal_processor import SignalProcessor
@@ -29,7 +32,12 @@ class WebInterface:
         self.user_interface = None
 
         self.logging_level = dsp_settings.get("logging_level", 5) * 10
-        logging.basicConfig(level=self.logging_level)
+        self.debug_mode = dsp_settings.get("debug_mode", False)
+        configure_logging(
+            level=self.logging_level,
+            log_dir=os.path.join(root_path, "_share", "logs"),
+            debug_mode=self.debug_mode,
+        )
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(self.logging_level)
         self.logger.info("Inititalizing web interface ")
@@ -48,6 +56,12 @@ class WebInterface:
         self._update_rate_arr = None
 
         self._doa_fig_type = dsp_settings.get("doa_fig_type", "Linear")
+
+        # Multi-VFO Dashboard state
+        self.multi_doa_all_results = {}
+        self.multi_doa_history = []
+        self.multi_doa_history_max = 120
+        self.reset_multi_doa_graph_flag = False
 
         # Que to communicate with the signal processing module
         self.sp_data_que = queue.Queue(1)
@@ -309,6 +323,7 @@ class WebInterface:
         data["en_hw_check"] = dsp_settings.get("en_hw_check", 0)
         data["logging_level"] = dsp_settings.get("logging_level", 5)
         data["disable_tooltips"] = dsp_settings.get("disable_tooltips", 0)
+        data["debug_mode"] = self.debug_mode
 
         # Output Data format. XML for Kerberos, CSV for Kracken, JSON future
         # XML, CSV, or JSON
@@ -347,6 +362,24 @@ class WebInterface:
             data["vfo_squelch_" + str(i)] = self.module_signal_processor.vfo_squelch[i]
             data["vfo_demod_" + str(i)] = self.module_signal_processor.vfo_demod[i]
             data["vfo_iq_" + str(i)] = self.module_signal_processor.vfo_iq[i]
+
+        # Webhook Configuration
+        data["webhook_enabled"] = dsp_settings.get("webhook_enabled", False)
+        data["webhook_urls"] = dsp_settings.get("webhook_urls", "")
+        data["webhook_evt_signal_appear"] = dsp_settings.get("webhook_evt_signal_appear", True)
+        data["webhook_evt_signal_disappear"] = dsp_settings.get("webhook_evt_signal_disappear", True)
+        data["webhook_evt_novel_freq"] = dsp_settings.get("webhook_evt_novel_freq", True)
+        data["webhook_evt_doa_change"] = dsp_settings.get("webhook_evt_doa_change", True)
+        data["webhook_evt_power_alert"] = dsp_settings.get("webhook_evt_power_alert", True)
+        data["webhook_doa_change_threshold_deg"] = dsp_settings.get("webhook_doa_change_threshold_deg", 10)
+        data["webhook_power_high_threshold_dbm"] = dsp_settings.get("webhook_power_high_threshold_dbm", -30)
+        data["webhook_power_low_threshold_dbm"] = dsp_settings.get("webhook_power_low_threshold_dbm", -90)
+        data["webhook_known_frequencies"] = dsp_settings.get("webhook_known_frequencies", "")
+        data["webhook_freq_tolerance_hz"] = dsp_settings.get("webhook_freq_tolerance_hz", 5000)
+        data["webhook_autolearn_enabled"] = dsp_settings.get("webhook_autolearn_enabled", False)
+        data["webhook_autolearn_window_sec"] = dsp_settings.get("webhook_autolearn_window_sec", 3600)
+        data["webhook_retry_count"] = dsp_settings.get("webhook_retry_count", 3)
+        data["webhook_retry_delay_ms"] = dsp_settings.get("webhook_retry_delay_ms", 1000)
 
         data["ext_upd_flag"] = False
 
@@ -428,6 +461,24 @@ class WebInterface:
             data["vfo_squelch_" + str(i)] = -80
             data["vfo_demod_" + str(i)] = "Default"
             data["vfo_iq_" + str(i)] = "Default"
+
+        # Webhook Configuration
+        data["webhook_enabled"] = False
+        data["webhook_urls"] = ""
+        data["webhook_evt_signal_appear"] = True
+        data["webhook_evt_signal_disappear"] = True
+        data["webhook_evt_novel_freq"] = True
+        data["webhook_evt_doa_change"] = True
+        data["webhook_evt_power_alert"] = True
+        data["webhook_doa_change_threshold_deg"] = 10
+        data["webhook_power_high_threshold_dbm"] = -30
+        data["webhook_power_low_threshold_dbm"] = -90
+        data["webhook_known_frequencies"] = ""
+        data["webhook_freq_tolerance_hz"] = 5000
+        data["webhook_autolearn_enabled"] = False
+        data["webhook_autolearn_window_sec"] = 3600
+        data["webhook_retry_count"] = 3
+        data["webhook_retry_delay_ms"] = 1000
 
         data["ext_upd_flag"] = True
 

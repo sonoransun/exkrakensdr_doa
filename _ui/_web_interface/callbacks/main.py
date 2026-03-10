@@ -7,7 +7,7 @@ import dash_devices as dash
 import numpy as np
 
 # isort: off
-from maindash import app, spectrum_fig, waterfall_fig, web_interface
+from maindash import app, multi_doa_fig, multi_doa_history_fig, spectrum_fig, waterfall_fig, web_interface
 
 # isort: on
 
@@ -47,7 +47,7 @@ from variables import (
 @app.callback_connect
 def func(client, connect):
     if connect and len(app.clients) == 1:
-        fetch_dsp_data(app, web_interface, spectrum_fig, waterfall_fig)
+        fetch_dsp_data(app, web_interface, spectrum_fig, waterfall_fig, multi_doa_fig, multi_doa_history_fig)
         fetch_gps_data(app, web_interface)
     elif not connect and len(app.clients) == 0:
         web_interface.dsp_timer.cancel()
@@ -1193,3 +1193,97 @@ def reconfig_daq_chain(input_value, freq, gain):
     return Output("daq_cfg_files", "value", daq_config_filename), Output(
         "active_daq_ini_cfg", "children", "Active Configuration: " + web_interface.active_daq_ini_cfg
     )
+
+
+# ============================================
+#       WEBHOOK CONFIGURATION CALLBACK
+# ============================================
+@app.callback_shared(
+    None,
+    [
+        Input(component_id="webhook_enabled", component_property="value"),
+        Input(component_id="webhook_urls", component_property="value"),
+        Input(component_id="webhook_evt_signal_appear", component_property="value"),
+        Input(component_id="webhook_evt_signal_disappear", component_property="value"),
+        Input(component_id="webhook_evt_novel_freq", component_property="value"),
+        Input(component_id="webhook_evt_doa_change", component_property="value"),
+        Input(component_id="webhook_evt_power_alert", component_property="value"),
+        Input(component_id="webhook_doa_change_threshold_deg", component_property="value"),
+        Input(component_id="webhook_power_high_threshold_dbm", component_property="value"),
+        Input(component_id="webhook_power_low_threshold_dbm", component_property="value"),
+        Input(component_id="webhook_known_frequencies", component_property="value"),
+        Input(component_id="webhook_freq_tolerance_hz", component_property="value"),
+        Input(component_id="webhook_autolearn_enabled", component_property="value"),
+        Input(component_id="webhook_autolearn_window_sec", component_property="value"),
+        Input(component_id="webhook_retry_count", component_property="value"),
+        Input(component_id="webhook_retry_delay_ms", component_property="value"),
+    ],
+)
+def update_webhook_params(
+    en_webhook,
+    urls,
+    evt_appear,
+    evt_disappear,
+    evt_novel,
+    evt_doa,
+    evt_power,
+    doa_thresh,
+    power_high,
+    power_low,
+    known_freqs,
+    freq_tol,
+    en_autolearn,
+    autolearn_window,
+    retry_count,
+    retry_delay,
+):
+    detector = web_interface.module_signal_processor.webhook_detector
+    detector.enabled = bool(en_webhook and len(en_webhook))
+    detector.evt_signal_appear = bool(evt_appear and len(evt_appear))
+    detector.evt_signal_disappear = bool(evt_disappear and len(evt_disappear))
+    detector.evt_novel_freq = bool(evt_novel and len(evt_novel))
+    detector.evt_doa_change = bool(evt_doa and len(evt_doa))
+    detector.evt_power_alert = bool(evt_power and len(evt_power))
+
+    if doa_thresh is not None:
+        detector.doa_change_threshold_deg = float(doa_thresh)
+    if power_high is not None:
+        detector.power_high_threshold_dbm = float(power_high)
+    if power_low is not None:
+        detector.power_low_threshold_dbm = float(power_low)
+    if freq_tol is not None:
+        detector.freq_tolerance_hz = float(freq_tol)
+        detector.frequency_history.tolerance_hz = detector.freq_tolerance_hz
+    if autolearn_window is not None:
+        detector.autolearn_window_sec = float(autolearn_window)
+        detector.frequency_history.window_sec = detector.autolearn_window_sec
+    if retry_count is not None:
+        dsp_settings["webhook_retry_count"] = int(retry_count)
+    if retry_delay is not None:
+        dsp_settings["webhook_retry_delay_ms"] = int(retry_delay)
+
+    detector.autolearn_enabled = bool(en_autolearn and len(en_autolearn))
+
+    if urls is not None:
+        dsp_settings["webhook_urls"] = urls
+    if known_freqs is not None:
+        dsp_settings["webhook_known_frequencies"] = known_freqs
+        if known_freqs.strip():
+            detector.known_frequencies = [float(f.strip()) for f in known_freqs.split(",") if f.strip()]
+        else:
+            detector.known_frequencies = []
+
+    dsp_settings["webhook_enabled"] = detector.enabled
+    dsp_settings["webhook_evt_signal_appear"] = detector.evt_signal_appear
+    dsp_settings["webhook_evt_signal_disappear"] = detector.evt_signal_disappear
+    dsp_settings["webhook_evt_novel_freq"] = detector.evt_novel_freq
+    dsp_settings["webhook_evt_doa_change"] = detector.evt_doa_change
+    dsp_settings["webhook_evt_power_alert"] = detector.evt_power_alert
+    dsp_settings["webhook_doa_change_threshold_deg"] = detector.doa_change_threshold_deg
+    dsp_settings["webhook_power_high_threshold_dbm"] = detector.power_high_threshold_dbm
+    dsp_settings["webhook_power_low_threshold_dbm"] = detector.power_low_threshold_dbm
+    dsp_settings["webhook_freq_tolerance_hz"] = detector.freq_tolerance_hz
+    dsp_settings["webhook_autolearn_enabled"] = detector.autolearn_enabled
+    dsp_settings["webhook_autolearn_window_sec"] = detector.autolearn_window_sec
+
+    web_interface.save_configuration()

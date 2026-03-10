@@ -79,5 +79,22 @@
   "vfo_squelch_14": -120,
   "vfo_bw_15": 12500,
   "vfo_freq_15": 395000000.0,
-  "vfo_squelch_15": -120
+  "vfo_squelch_15": -120,
+  "webhook_enabled": false,
+  "webhook_urls": "",
+  "webhook_evt_signal_appear": true,
+  "webhook_evt_signal_disappear": true,
+  "webhook_evt_novel_freq": true,
+  "webhook_evt_doa_change": true,
+  "webhook_evt_power_alert": true,
+  "webhook_doa_change_threshold_deg": 10,
+  "webhook_power_high_threshold_dbm": -30,
+  "webhook_power_low_threshold_dbm": -90,
+  "webhook_known_frequencies": "",
+  "webhook_freq_tolerance_hz": 5000,
+  "webhook_autolearn_enabled": false,
+  "webhook_autolearn_window_sec": 3600,
+  "webhook_retry_count": 3,
+  "webhook_retry_delay_ms": 1000,
+  "debug_mode": false
 }

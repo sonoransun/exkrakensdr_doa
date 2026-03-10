@@ -6,6 +6,9 @@ const ws = require('ws');
 const fs = require('fs');
 const crypto = require('crypto');
 
+const WebhookDispatcher = require('./webhook_dispatcher');
+const webhookDispatcher = new WebhookDispatcher();
+
 const app = express()
 const port = 8042
 const wsport = 8021
@@ -54,15 +57,22 @@ function loadSettingsJson (){
           settingsChanged = true;
         }
         settingsJson = newSettings;
-    } catch (error) {}
+        debugMode = debugMode || (settingsJson.debug_mode === true);
+    } catch (error) {if(debugMode) console.error("Error loading settings:", error.message)}
   } else {
     try {
         console.log("Settings are empty, so initial load")
         settingsChanged = true;
         let rawdata = fs.readFileSync(settingsJsonPath);
         settingsJson = JSON.parse(rawdata)
+        debugMode = debugMode || (settingsJson.debug_mode === true);
         remoteServer = settingsJson.mapping_server_url || remoteServerDefault
-    } catch (error) {}
+    } catch (error) {if(debugMode) console.error("Error loading settings:", error.message)}
+  }
+
+  // Update webhook dispatcher configuration
+  if (settingsJson.webhook_enabled) {
+    webhookDispatcher.updateConfig(settingsJson);
   }
 
   if(debugMode){
@@ -224,6 +234,17 @@ app.post('/doapost', (req, res) => {
       })
     } 
   res.sendStatus(200)
+});
+
+app.post('/webhook_events', (req, res) => {
+    if (settingsJson.webhook_enabled && req.body && req.body.events) {
+        webhookDispatcher.dispatchEvents(req.body.events);
+    }
+    res.sendStatus(200);
+});
+
+app.get('/webhook_status', (req, res) => {
+    res.json(webhookDispatcher.getStats());
 });
 
 app.post('/prpost', (req, res) => {
